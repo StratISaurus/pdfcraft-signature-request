@@ -1,6 +1,14 @@
 # PdfCraft signature request — experimental local relay
 
-First working transport slice, not a signing product. Node.js >=22, no external dependencies. No installation step is needed.
+Local browser electronic-approval prototype plus the original transport experiment. Node.js >=22. Run `npm ci` to install pinned dependencies (PDF.js, pdf-lib and browser-test tooling). Not a production signing product.
+
+## Browser prototype
+
+Run `npm run demo:browser`, open `.local/open-sender.html`, and follow its private sender link. Use the sample PDF and keep the sender tab open. See [local browser testing](docs/local-browser-testing.md) for the complete workflow and limitations. `npm run test:browser` exercises it using installed Microsoft Edge.
+
+Supports local PDF review, typed approval receipts, encrypted returns, and any-order/sequential/grouped recipients. Supports one fixed-size positioned typed-signature field per recipient on supported unrotated/uncropped pages; no verified identities or trusted PDF certificates. See [field limitations](docs/positioned-signature-fields.md).
+
+The API below describes the separate original transport service (`npm start`), not the browser prototype service (`npm run demo:browser`).
 
 ## Run
 
@@ -48,13 +56,13 @@ Send credentials only as `Authorization: Bearer <capability>`. Query strings are
 
 Client module `src/client-crypto.js` uses WebCrypto AES-256-GCM, fresh keys/nonces, and protocol-string additional authenticated data. `encryptBytes(bytes)` returns `{key,payload}`; keep key local and upload only payload. `decryptBytes(payload,key)` checks protocol and authenticates ciphertext. This is not yet an authenticated signing-envelope protocol: document/recipient/manifest binding and substitution protection between envelopes remain future work.
 
-Limits: 100 live envelopes, 1 MiB request body, 8 MiB total JSON-encoded payload storage; configurable downwards in startRelay. TTL is 1–86400 seconds. Expired records are reclaimed on subsequent requests. All records are RAM-only and lost on restart. The HTTP service binds only to IPv4 loopback, rejects browser Origin headers and unexpected Host headers, sends no CORS permission, and uses no-store responses. This intentionally means the hosted browser signer is not connected yet.
+Limits: 100 live envelopes, 1 MiB request body, 8 MiB total JSON-encoded payload storage; configurable downwards in startRelay. TTL is 1–86400 seconds. Expired records are reclaimed on subsequent requests. All records are RAM-only and lost on restart. The HTTP service binds only to IPv4 loopback, rejects browser Origin headers and unexpected Host headers, sends no CORS permission, and uses no-store responses. This original transport service is separate from the browser prototype’s same-origin local service.
 
 Errors include 400 invalid body/query, 401 invalid/missing capability on an existing resource, 403 Origin/Host restriction, 404 absent/revoked/expired resource, 413 oversized body, 415 unsupported media type, 507 storage capacity. The differing 401/404 statuses are not an envelope-existence privacy guarantee. IDs are random, but authorisation never relies solely on an ID.
 
 ## Security and completion boundaries
 
-Experimental local development only. Do not expose through a reverse proxy, bind publicly, or use real client documents. No TLS, durable storage, recipient verification, abuse controls suitable for public service, browser PDF viewer, signing/evidence verification, stage routing, recovery phrase, encrypted backup or desktop integration is implemented. Bounded per-request/storage limits are not a complete concurrent connection or denial-of-service defence.
+Experimental local development only. Do not expose through a reverse proxy, bind publicly, or use real client documents. No TLS, durable storage, recipient verification, abuse controls suitable for public service, recovery phrase, encrypted backup or desktop integration is implemented. The browser prototype adds PDF viewing, typed-approval artifact validation and stage routing, not certificate-based signatures. Bounded per-request/storage limits are not a complete concurrent connection or denial-of-service defence.
 
 A correctly implemented relay need not see plaintext, but the hosted signer code is trusted: a malicious host/deployment could capture document keys in the browser. Separate origins and reviewed/reproducible builds reduce but do not eliminate that trust. Full secret-bearing invitation URLs cannot pass through the backend/email provider while claiming those parties never receive decryption secrets. Production key delivery remains a design gate.
 

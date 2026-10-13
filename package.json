@@ -3,6 +3,21 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22" },
-  "scripts": { "test": "node --test", "start": "node src/cli.js", "demo": "node src/demo.js" }
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "start": "node src/cli.js",
+    "demo": "node src/demo.js",
+    "demo:browser": "node src/local-demo.js",
+    "test:browser": "node scripts/browser-test.js"
+  },
+  "dependencies": {
+    "pdf-lib": "1.17.1",
+    "pdfjs-dist": "5.4.624"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.0"
+  }
 }

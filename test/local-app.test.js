@@ -1,0 +1,53 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { startLocalApp } from '../src/local-app.js';
+import { encryptBytes } from '../src/client-crypto.js';
+import { randomBytes } from 'node:crypto';
+const token = () => randomBytes(32).toString('base64url');
+
+test('ciphertext response is gated until sender accepts all current stage members; replay is atomic', async t => {
+  const app = await startLocalApp(); t.after(() => app.close());
+  const call = (path, capability, method='GET', body) => fetch(app.url+path,{method,headers:{Authorization:`Bearer ${capability}`,...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});
+  const {payload} = await encryptBytes(new TextEncoder().encode('synthetic encrypted document'));
+  const routes = [0,0,1].map((stage,i) => ({id:`r${i+1}`,stage,readToken:token(),responseToken:token(),payload}));
+  let res = await call('/api/requests', app.launchToken,'POST',{version:'pdfcraft-approval-v1',manifestHash:'a'.repeat(64),recipients:routes});
+  assert.equal(res.status,201);
+  const {id,adminToken} = await res.json();
+  const base = `/api/requests/${id}`;
+  assert.equal((await call(base+'/recipients/r3',routes[2].readToken)).status,423);
+  assert.equal((await call(base+'/recipients/r1',routes[0].responseToken)).status,401);
+  const submit = i => call(base+`/recipients/r${i+1}/response`,routes[i].responseToken,'POST',{manifestHash:'a'.repeat(64),payload});
+  assert.equal((await submit(2)).status,423);
+  const races = await Promise.all([submit(0),submit(0)]);
+  assert.deepEqual(races.map(r=>r.status).sort(),[201,409]);
+  assert.equal((await call(base,adminToken)).status,200);
+  assert.equal((await call(base+'/accept/r1',adminToken,'POST',{manifestHash:'a'.repeat(64)})).status,200);
+  assert.equal((await call(base+'/recipients/r3',routes[2].readToken)).status,423);
+  assert.equal((await submit(1)).status,201);
+  assert.equal((await call(base+'/accept/r2',adminToken,'POST',{manifestHash:'a'.repeat(64)})).status,200);
+  assert.equal((await call(base+'/recipients/r3',routes[2].readToken)).status,200);
+  assert.equal((await call(base,adminToken,'DELETE')).status,204);
+  assert.equal((await call(base+'/recipients/r1',routes[0].readToken)).status,404);
+});
+
+test('local app denies hostile browser origins, unknown assets and malformed payloads; expiry removes records',async t=>{
+  const app=await startLocalApp({ttlMs:100});t.after(()=>app.close());
+  const headers={Authorization:`Bearer ${app.launchToken}`,'Content-Type':'application/json'};
+  const {payload}=await encryptBytes(new Uint8Array([1,2,3]));
+  const body={version:'pdfcraft-approval-v1',manifestHash:'b'.repeat(64),recipients:[{id:'r1',stage:0,readToken:token(),responseToken:token(),payload}]};
+  const create=(data,extra={})=>fetch(app.url+'/api/requests',{method:'POST',headers:{...headers,...extra},body:JSON.stringify(data)});
+  assert.equal((await create(body,{Origin:'https://evil.invalid'})).status,403);
+  assert.equal((await create(body,{'Sec-Fetch-Site':'cross-site'})).status,403);
+  assert.equal((await create({...body,version:'future'})).status,400);
+  assert.equal((await create({...body,key:'must never be accepted'})).status,400);
+  assert.equal((await create({...body,recipients:[{...body.recipients[0],payload:{...payload,nonce:'bad'}}]})).status,400);
+  assert.equal((await fetch(app.url+'/.local/open-sender.html')).status,404);
+  assert.equal((await fetch(app.url+'/health?token=not-allowed')).status,400);
+  assert.equal((await create(body,{'Content-Type':'text/plain'})).status,415);
+  assert.equal((await create(body,{Authorization:`Bearer ${token()}`})).status,401);
+  const res=await create(body,{Origin:app.url});assert.equal(res.status,201);
+  assert.equal(res.headers.get('access-control-allow-origin'),null);
+  const {id,adminToken}=await res.json();
+  await new Promise(resolve=>setTimeout(resolve,130));
+  assert.equal((await fetch(app.url+`/api/requests/${id}`,{headers:{Authorization:`Bearer ${adminToken}`}})).status,404);
+});

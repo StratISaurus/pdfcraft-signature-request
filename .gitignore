@@ -7,3 +7,7 @@ coverage/
 *.pem
 *.key
 .DS_Store
+.local/
+artifacts/
+.hermes-tmp.*/
+docs/.hermes-tmp.*/
