@@ -1,13 +1,18 @@
 import { documentSelectionRaces } from './document-selection-races.js';
 import assert from 'node:assert/strict';
 import { chromium } from '@playwright/test';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, access } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
 import { PDFDocument } from 'pdf-lib';
 import { startDemo } from '../src/local-demo.js';
 import { prepareRequest, invitationFragment, openInvitation, api } from '../src/approval-client.js';
 const dir=new URL('../artifacts/',import.meta.url);
 await mkdir(dir,{recursive:true});
-const app=await startDemo({port:0,writeLaunch:false});
+// Exercise the production launcher without overwriting a user's active capability.
+await access(new URL('../.local/open-sender.html',import.meta.url)).then(()=>{
+  throw Error('Close the local demo and remove its stale launcher before running browser tests.');
+},error=>{if(error.code!=='ENOENT') throw error;});
+const app=await startDemo({port:0,writeLaunch:true});
 let browser;
 try {
   browser=await chromium.launch({channel:'msedge',headless:true});
@@ -16,6 +21,21 @@ try {
   context.on('request',request=>trafficReads.push(request.allHeaders().then(headers=>requests.push({url:request.url(),headers,body:request.postData() || ''}))));
   context.on('response',response=>{if(response.url().includes('/api/')) trafficReads.push((async()=>responses.push({url:response.url(),headers:await response.allHeaders(),body:await response.text()}))());});
   context.on('page',page=>{page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')consoleMessages.push(m.text());});});
+  // A real file:// click, not page.goto(privateLink), must open the sender.
+  const sender=await context.newPage();
+  await sender.goto(pathToFileURL(app.launchPath).href);
+  const navigation=sender.waitForResponse(response=>response.request().isNavigationRequest() && response.url()===app.url+'/');
+  await sender.getByRole('link',{name:'Open local sender (keep this file private)'}).click();
+  const launchResponse=await navigation;
+  const launchHeaders=await launchResponse.request().allHeaders();
+  const launcher={status:launchResponse.status(),site:launchHeaders['sec-fetch-site'],mode:launchHeaders['sec-fetch-mode'],dest:launchHeaders['sec-fetch-dest'],origin:launchHeaders.origin || 'absent'};
+  console.log('Launcher navigation:',JSON.stringify(launcher));
+  assert.equal(launcher.status,200,'Real file launcher click must load the sender, not origin_or_host_forbidden');
+  assert.equal(launcher.site,'cross-site');
+  assert.equal(launcher.mode,'navigate');
+  assert.equal(launcher.dest,'document');
+  await sender.getByRole('button',{name:'Use sample PDF'}).waitFor();
+  assert.equal(await sender.evaluate(()=>location.hash),'','Setup fragment is removed after local parsing');
   // Real PDF.js failure, both before any canvas and after a partial render.
   for (const normalPages of [0,1]) {
     const doc=await PDFDocument.create();
@@ -40,8 +60,6 @@ try {
     assert.equal(await page.locator('#approve').isDisabled(),true);
     await page.close();
   }
-  const sender=await context.newPage();
-  await sender.goto(app.url+'/#setup='+app.launchToken);
   await sender.getByRole('button',{name:'Use sample PDF'}).click();
   await sender.getByLabel('Recipients').fill('Alice Test\nBob Test');
   await sender.getByLabel('Signing order').selectOption('sequential');
@@ -182,14 +200,24 @@ try {
   assert.deepEqual(errors,[]);
   assert.deepEqual(consoleMessages.filter(m=>!m.includes('423 (Locked)') && !m.includes('404 (Not Found)')),[]);
   for(const request of requests) {
-    if(['data:','edge:'].includes(new URL(request.url).protocol)) continue; // Local font data / Edge download UI, not network traffic.
+    if(['data:','edge:','file:'].includes(new URL(request.url).protocol)) continue; // Local launcher/font data / Edge download UI, not HTTP traffic.
     assert.equal(new URL(request.url).origin,app.url,'No third-party network requests');
     assert(!request.url.includes('#'),'Invitation fragment must not enter an HTTP URL');
+    assert(!request.url.includes(app.launchToken) && !request.body.includes(app.launchToken),'Setup bearer must not enter HTTP URLs or bodies');
+    for(const [name,value] of Object.entries(request.headers)) {
+      if(name==='authorization' && request.url===app.url+'/api/requests') continue; // Sender capability, not a decryption key.
+      assert(!value.includes(app.launchToken),'Setup bearer may only enter the request-creation Authorization header');
+    }
     if(request.url.includes('/api/')) {
       assert(!request.body.includes('Alice Test') && !request.body.includes('Bob Test') && !request.body.includes('%PDF') && !request.body.includes('W'.repeat(80)),'No plaintext PDF or recipient names at relay');
       for(const link of links) {const inv=JSON.parse(new URLSearchParams(new URL(link).hash.slice(1)).get('invite'));assert(!request.body.includes(inv.key),'No document keys at relay');}
     }
   }
-  await writeFile(new URL('browser-result.json',dir),JSON.stringify({passed:true,selectionRaces,flow:'two recipients sequential',pages:4,positionedFields:{count:2,originalPages:[1,2],pdfjsTextBoundsVerified:true},failedRenderCases:[{width:2600,height:792,renderedPages:0,state:'waiting'},{width:2600,height:792,renderedPages:1,state:'waiting'}],wideNameReceipt:{characters:80,rendered:true,leftMargin:40,rightMargin:40},keyLeakChecks:{documentAndResponseKeys:true,urls:true,headers:true,bodies:true,requests:requests.length,responses:responses.length},pageErrors:errors,unexpectedConsoleErrors:[],expectedHttpErrors:consoleMessages,screenshots:['recipient-mobile-field.png','sender-fields.png','completed-in-page-signature.png','recipient-desktop.png','recipient-mobile.png','sender-complete.png','receipt-wide-name.png']},null,2));
+  await writeFile(new URL('browser-result.json',dir),JSON.stringify({passed:true,launcher,selectionRaces,flow:'two recipients sequential',pages:4,positionedFields:{count:2,originalPages:[1,2],pdfjsTextBoundsVerified:true},failedRenderCases:[{width:2600,height:792,renderedPages:0,state:'waiting'},{width:2600,height:792,renderedPages:1,state:'waiting'}],wideNameReceipt:{characters:80,rendered:true,leftMargin:40,rightMargin:40},keyLeakChecks:{documentAndResponseKeys:true,urls:true,headers:true,bodies:true,requests:requests.length,responses:responses.length},pageErrors:errors,unexpectedConsoleErrors:[],expectedHttpErrors:consoleMessages,screenshots:['recipient-mobile-field.png','sender-fields.png','completed-in-page-signature.png','recipient-desktop.png','recipient-mobile.png','sender-complete.png','receipt-wide-name.png']},null,2));
   console.log('PASS: browser sender -> two gated recipients -> encrypted returns -> downloaded 4-page PDF; failed/partial renders cannot approve; 80-W receipt rendered within margins; document/response keys absent from HTTP URLs, headers and bodies; no page errors.');
-} finally {await browser?.close();await app.close();}
+} finally {
+  try {await browser?.close();} finally {await app.close();}
+  await assert.rejects(fetch(app.url+'/health'),'Test listener must be closed');
+  await assert.rejects(access(app.launchPath),{code:'ENOENT'});
+  console.log('Cleanup verified: test listener closed; generated private launcher removed.');
+}

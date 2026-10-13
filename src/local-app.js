@@ -15,7 +15,12 @@ export async function startLocalApp({port=0, assets = new Map(), ttlMs=3600000}=
     const send = (status, body) => { res.writeHead(status, {'Content-Type':'application/json','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}); res.end(body === undefined ? undefined : JSON.stringify(body)); };
     const origin = `http://127.0.0.1:${server.address().port}`;
     const auth = expected => { const m = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(req.headers.authorization || ''); return m && timingSafeEqual(hash(m[1]),expected); };
-    if (req.headers.host !== `127.0.0.1:${server.address().port}` || (req.headers.origin && req.headers.origin !== origin) || req.headers['sec-fetch-site'] === 'cross-site') return send(403,{error:'origin_or_host_forbidden'});
+    // File launchers are cross-site navigations in Edge. Only the public root
+    // document may bypass that Fetch-Metadata gate; never API/asset fetches.
+    // Host and explicit Origin validation remain unconditional (including null).
+    const rootNavigation = req.method === 'GET' && req.url === '/' && assets.has('/') &&
+      req.headers['sec-fetch-mode'] === 'navigate' && req.headers['sec-fetch-dest'] === 'document';
+    if (req.headers.host !== `127.0.0.1:${server.address().port}` || (req.headers.origin && req.headers.origin !== origin) || (req.headers['sec-fetch-site'] === 'cross-site' && !rootNavigation)) return send(403,{error:'origin_or_host_forbidden'});
     if (req.url.includes('?')) return send(400,{error:'query_not_allowed'});
     if (req.method !== 'POST' && (req.headers['transfer-encoding'] || Number(req.headers['content-length']) > 0)) return send(400,{error:'unexpected_body'});
     for (const [id,r] of records) if (r.expiresAt <= Date.now()) records.delete(id);

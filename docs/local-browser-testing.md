@@ -1,6 +1,6 @@
 # Local browser approval prototype
 
-Status: implemented browser-only experiment; NOT the final PdfCraft desktop integration or production signing service. Independent regression re-review passed for the local synthetic-only scope (26 Node tests and the browser end-to-end test). Do not use real client documents.
+Status: implemented browser-only experiment; NOT the final PdfCraft desktop integration or production signing service. Current launcher regression verification passed 31 Node tests and the real Edge browser end-to-end test. Do not use real client documents.
 
 ## Run on this development machine
 
@@ -14,6 +14,14 @@ npm run demo:browser
 ```
 
 The automated browser test uses installed Microsoft Edge via Playwright. The last command runs the local UI on http://127.0.0.1:8788. Open `.local/open-sender.html` from disk and click its private sender link. Do not send that file or link to recipients: it contains the sender setup capability. The launcher file is gitignored; Windows ACL hardening is not yet verified, so use only a trusted local machine/account. No server is left running by the automated browser test.
+
+## Launcher security and regression
+
+The actual disk launcher is exercised with a `file://` page and a real Edge link click, then the same sender tab completes the encrypted workflow. Before the fix Edge sent `Sec-Fetch-Site: cross-site`, `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`, with no Origin, and received 403. After the fix that exact navigation receives 200. Only a GET of the public `/` HTML shell with document-navigation metadata can bypass the cross-site Fetch Metadata check. API routes, scripts, health, frames and cross-site fetches do not receive this exception. Host validation and explicit Origin rejection (including `Origin: null`) remain unconditional; query/body restrictions and no-CORS policy remain intact.
+
+The launcher contains a sender **capability**, not a document decryption key. The browser removes the setup fragment after parsing and may send this capability only in the request-creation Authorization header. Document and response encryption keys must never enter HTTP URLs, headers or bodies. Browser regression checks these boundaries and records only non-secret navigation metadata in `artifacts/browser-result.json`.
+
+**Trusted-machine/account only:** Node's `mode: 0o600` is not proof of a private Windows ACL, and existing files may retain their permissions. Windows ACL hardening is still unverified. Do not use a shared/untrusted account or synced/shared repository folder; do not share the launcher or copy its link to logs/chat. Use synthetic PDFs only. Stop the demo with Ctrl+C to remove the launcher. After an abnormal stop, remove a stale launcher only after confirming that its demo is stopped. The browser test refuses to overwrite an existing launcher; stop the manual demo before running it. Automated tests verify their listener is closed and their generated launcher is removed.
 
 ## Exercise the browser flow
 
