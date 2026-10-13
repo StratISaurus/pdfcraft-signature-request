@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { listenLoopback } from './listen-loopback.js';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 const token = () => randomBytes(32).toString('base64url');
 const hash = s => createHash('sha256').update(s).digest();
@@ -90,6 +91,6 @@ export async function startLocalApp({port=0, assets = new Map(), ttlMs=3600000}=
     } catch(e) { return send(e.status || 400,{error:'invalid_body'}); }
   });
   server.requestTimeout=15000;server.headersTimeout=10000;server.maxConnections=30;
-  await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',resolve);});
+  await listenLoopback(server,port);
   return {url:`http://127.0.0.1:${server.address().port}`,launchToken,close:()=>new Promise(resolve=>server.close(resolve))};
 }

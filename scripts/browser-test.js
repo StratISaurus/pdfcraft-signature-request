@@ -1,18 +1,20 @@
 import { documentSelectionRaces } from './document-selection-races.js';
 import assert from 'node:assert/strict';
 import { chromium } from '@playwright/test';
-import { mkdir, readFile, writeFile, access } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, access, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { PDFDocument } from 'pdf-lib';
 import { startDemo } from '../src/local-demo.js';
 import { prepareRequest, invitationFragment, openInvitation, api } from '../src/approval-client.js';
 const dir=new URL('../artifacts/',import.meta.url);
 await mkdir(dir,{recursive:true});
-// Exercise the production launcher without overwriting a user's active capability.
-await access(new URL('../.local/open-sender.html',import.meta.url)).then(()=>{
-  throw Error('Close the local demo and remove its stale launcher before running browser tests.');
-},error=>{if(error.code!=='ENOENT') throw error;});
-const app=await startDemo({port:0,writeLaunch:true});
+// Isolated launcher and ephemeral listener: never touch the live user's demo.
+const launchDir=await mkdtemp(join(tmpdir(),'pdfcraft-browser-'));
+const app=await startDemo({port:0,writeLaunch:false});
+app.launchPath=join(launchDir,'open-sender.html');
+await writeFile(app.launchPath,`<!doctype html><meta name="referrer" content="no-referrer"><a href="${app.url}/#setup=${app.launchToken}" rel="noreferrer">Open local sender (keep this file private)</a>`,{mode:0o600});
 let browser;
 try {
   browser=await chromium.launch({channel:'msedge',headless:true});
@@ -60,11 +62,24 @@ try {
     assert.equal(await page.locator('#approve').isDisabled(),true);
     await page.close();
   }
+  assert.deepEqual(await sender.locator('#workflow a').allTextContents(),['Document','People','Fields','Review / share']);
   await sender.getByRole('button',{name:'Use sample PDF'}).click();
-  await sender.getByLabel('Recipients').fill('Alice Test\nBob Test');
+  await sender.getByLabel('Signer 1 name').fill('Alice Test');
+  await sender.getByRole('button',{name:'Add signer',exact:true}).click();
+  await sender.getByLabel('Signer 2 name').fill('Bob Test');
+  await sender.getByRole('button',{name:'Add signer',exact:true}).click();
+  await sender.getByRole('button',{name:'Remove signer 3'}).click();
+  assert.equal(await sender.locator('.recipient-card').count(),2);
+  assert.notEqual(await sender.locator('.recipient-card').nth(0).evaluate(e=>getComputedStyle(e).borderLeftColor),await sender.locator('.recipient-card').nth(1).evaluate(e=>getComputedStyle(e).borderLeftColor));
   await sender.getByLabel('Signing order').selectOption('sequential');
   await sender.getByRole('button',{name:'Preview and place fields'}).click();
   await sender.locator('#placement-pages canvas').nth(1).waitFor();
+  const keyboardPage=sender.locator('#placement-pages canvas').first();
+  await keyboardPage.focus();await keyboardPage.press('Enter');
+  assert.equal(await sender.locator('#placement-pages .signature-field').count(),1,'Keyboard places a field');
+  const keyboardLeft=await sender.locator('#placement-pages .signature-field').evaluate(e=>parseFloat(e.style.left));
+  await keyboardPage.press('ArrowRight');
+  assert(await sender.locator('#placement-pages .signature-field').evaluate((e,left)=>parseFloat(e.style.left)>left,keyboardLeft),'Arrow key moves field');
   await sender.getByLabel('Field recipient').selectOption('r1');
   await sender.locator('#placement-pages canvas').nth(0).click({position:{x:70,y:500}});
   await sender.getByLabel('Field recipient').selectOption('r2');
@@ -76,6 +91,10 @@ try {
   assert.equal(await sender.locator('#placement-pages .signature-field').count(),1);
   await sender.locator('#placement-pages canvas').nth(1).click({position:{x:100,y:500}});
   await sender.screenshot({path:new URL('sender-fields.png',dir).pathname.replace(/^\/C:/,'C:'),fullPage:true});
+  await sender.setViewportSize({width:390,height:844});
+  assert.equal(await sender.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+  await sender.screenshot({path:new URL('sender-mobile.png',dir).pathname.replace(/^\/C:/,'C:'),fullPage:true});
+  await sender.setViewportSize({width:1280,height:720});
   await sender.getByRole('button',{name:'Create encrypted request'}).click();
   await sender.getByRole('heading',{name:'Request ready'}).waitFor();
   const links=await sender.locator('[data-invitation]').evaluateAll(nodes=>nodes.map(n=>n.href));
@@ -104,18 +123,33 @@ try {
   releaseDocument();
   await recipient.locator('canvas').nth(1).waitFor();
   await recipient.locator('#consent-panel').waitFor();
+  await recipient.getByRole('button',{name:'Start signing'}).click();
+  assert.equal(await recipient.evaluate(()=>document.activeElement.classList.contains('signature-field')),true);
+  await recipient.getByRole('button',{name:'Enter typed signature'}).click();
+  assert.equal(await recipient.evaluate(()=>document.activeElement.id),'name');
+  assert(!await recipient.locator('#message').textContent().then(text=>text.includes('Working locally')),'Navigation must not leave a busy message');
   assert.equal(await recipient.evaluate(()=>window.prematureApproval),false,'Enable only after every page rendered');
   assert.equal(await recipient.locator('#pages .signature-field').count(),1);
   assert.match(await recipient.locator('#pages .signature-field').textContent(),/r1/);
   await recipient.getByRole('button',{name:'Approve and return encrypted PDF'}).click();
   await recipient.getByText('Confirm that you reviewed every page before approving.').waitFor();
   await recipient.getByLabel('Your typed name').fill('W'.repeat(80));
+  assert.equal(await recipient.locator('#signature-preview').textContent(),'W'.repeat(80));
   await recipient.getByLabel('I reviewed every page').check();
   await recipient.screenshot({path:new URL('recipient-desktop.png',dir).pathname.replace(/^\/C:/,'C:') ,fullPage:true});
   await recipient.getByRole('button',{name:'Approve and return encrypted PDF'}).click();
   await recipient.getByText('Approval returned').waitFor();
-  await sender.getByRole('button',{name:'Check responses'}).click();
-  await sender.getByText('1 of 2 accepted').waitFor();
+  await recipient.getByRole('heading',{name:'Your approval is returned'}).waitFor();
+  await recipient.screenshot({path:new URL('recipient-success.png',dir).pathname.replace(/^\/C:/,'C:'),fullPage:true});
+  const ownDownload=recipient.waitForEvent('download');
+  await recipient.getByRole('button',{name:'Download my approved PDF'}).click();
+  await (await ownDownload).saveAs(new URL('own-approved-synthetic.pdf',dir).pathname.replace(/^\/C:/,'C:'));
+  assert.equal((await PDFDocument.load(await readFile(new URL('own-approved-synthetic.pdf',dir)))).getPageCount(),3);
+  assert.match(await recipient.locator('#completion-status').textContent(),/not known/);
+  await sender.bringToFront();
+  await sender.getByText('1 of 2 accepted',{exact:false}).waitFor({timeout:15000});
+  assert.match(await sender.locator('[data-recipient="r1"] .status').textContent(),/Accepted/);
+  assert.match(await sender.locator('[data-recipient="r2"] .status').textContent(),/Ready to sign/);
   const secondInvite=JSON.parse(new URLSearchParams(new URL(links[1]).hash.slice(1)).get('invite'));
   secrets.push(secondInvite.key,(await openInvitation(app.url,secondInvite)).responseKey);
   await recipient.goto(links[1]);
@@ -133,6 +167,7 @@ try {
   await recipient.getByText('Approval returned').waitFor();
   await sender.getByRole('button',{name:'Check responses'}).click();
   await sender.getByText('2 of 2 accepted').waitFor();
+  assert.match(await sender.locator('#auto-status').textContent(),/complete/i);
   await sender.screenshot({path:new URL('sender-complete.png',dir).pathname.replace(/^\/C:/,'C:'),fullPage:true,mask:[sender.locator('#invitations')]});
   const evidenceDownload=sender.waitForEvent('download');
   await sender.getByRole('button',{name:'Download evidence JSON'}).click();
@@ -213,10 +248,10 @@ try {
       for(const link of links) {const inv=JSON.parse(new URLSearchParams(new URL(link).hash.slice(1)).get('invite'));assert(!request.body.includes(inv.key),'No document keys at relay');}
     }
   }
-  await writeFile(new URL('browser-result.json',dir),JSON.stringify({passed:true,launcher,selectionRaces,flow:'two recipients sequential',pages:4,positionedFields:{count:2,originalPages:[1,2],pdfjsTextBoundsVerified:true},failedRenderCases:[{width:2600,height:792,renderedPages:0,state:'waiting'},{width:2600,height:792,renderedPages:1,state:'waiting'}],wideNameReceipt:{characters:80,rendered:true,leftMargin:40,rightMargin:40},keyLeakChecks:{documentAndResponseKeys:true,urls:true,headers:true,bodies:true,requests:requests.length,responses:responses.length},pageErrors:errors,unexpectedConsoleErrors:[],expectedHttpErrors:consoleMessages,screenshots:['recipient-mobile-field.png','sender-fields.png','completed-in-page-signature.png','recipient-desktop.png','recipient-mobile.png','sender-complete.png','receipt-wide-name.png']},null,2));
+  await writeFile(new URL('browser-result.json',dir),JSON.stringify({passed:true,launcher,selectionRaces,flow:'two recipients sequential',pages:4,positionedFields:{count:2,originalPages:[1,2],pdfjsTextBoundsVerified:true},failedRenderCases:[{width:2600,height:792,renderedPages:0,state:'waiting'},{width:2600,height:792,renderedPages:1,state:'waiting'}],wideNameReceipt:{characters:80,rendered:true,leftMargin:40,rightMargin:40},keyLeakChecks:{documentAndResponseKeys:true,urls:true,headers:true,bodies:true,requests:requests.length,responses:responses.length},pageErrors:errors,unexpectedConsoleErrors:[],expectedHttpErrors:consoleMessages,screenshots:['sender-mobile.png','recipient-success.png','recipient-mobile-field.png','sender-fields.png','completed-in-page-signature.png','recipient-desktop.png','recipient-mobile.png','sender-complete.png','receipt-wide-name.png']},null,2));
   console.log('PASS: browser sender -> two gated recipients -> encrypted returns -> downloaded 4-page PDF; failed/partial renders cannot approve; 80-W receipt rendered within margins; document/response keys absent from HTTP URLs, headers and bodies; no page errors.');
 } finally {
-  try {await browser?.close();} finally {await app.close();}
+  try {await browser?.close();} finally {await app.close();await rm(launchDir,{recursive:true,force:true});}
   await assert.rejects(fetch(app.url+'/health'),'Test listener must be closed');
   await assert.rejects(access(app.launchPath),{code:'ENOENT'});
   console.log('Cleanup verified: test listener closed; generated private launcher removed.');

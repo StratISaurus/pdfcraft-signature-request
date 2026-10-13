@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { listenLoopback } from './listen-loopback.js';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 
 const hash = value => createHash('sha256').update(value).digest();
@@ -69,6 +70,6 @@ export async function startRelay({ bootstrapToken, host = '127.0.0.1', port = 0,
     }
     send(404, { error: 'not_found' });
   });
-  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
+  await listenLoopback(server,port);
   return { url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())) };
 }

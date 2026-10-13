@@ -14,6 +14,9 @@ async function start(t, options = {}) {
   const request = (path, { token, body, method = 'GET', headers = {} } = {}) => fetch(relay.url + path, {
     method, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...headers },
     body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body),
+  }).catch(error => {
+    // Include transport cause and allocated port, never capability/body/URL secrets.
+    throw new Error(`relay transport failure on port ${new URL(relay.url).port}: ${error.message}; cause=${error.cause?.code || error.cause?.message || 'unknown'}`, { cause: error });
   });
   const create = (payload, ttlSeconds = 60) => request('/v1/envelopes', { method: 'POST', token: bootstrapToken, body: { payload, ttlSeconds } });
   return { ...relay, request, create, bootstrapToken };

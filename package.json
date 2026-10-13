@@ -11,7 +11,9 @@
     "start": "node src/cli.js",
     "demo": "node src/demo.js",
     "demo:browser": "node src/local-demo.js",
-    "test:browser": "node scripts/browser-test.js"
+    "test:browser": "node scripts/browser-test.js",
+    "test:ux": "node scripts/ux-lifecycle-test.js",
+    "test:routing": "node scripts/routing-intent-test.js"
   },
   "dependencies": {
     "pdf-lib": "1.17.1",

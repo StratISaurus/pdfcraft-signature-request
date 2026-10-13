@@ -4,7 +4,7 @@ Local browser electronic-approval prototype plus the original transport experime
 
 ## Browser prototype
 
-Run `npm run demo:browser`, open `.local/open-sender.html`, and follow its private sender link. Use the sample PDF and keep the sender tab open. **Trusted local machine/account only:** the secret-bearing launcher's Windows ACL is not hardened/verified. See [local browser testing](docs/local-browser-testing.md) for the complete workflow and limitations. `npm run test:browser` exercises the actual file-launcher click and encrypted workflow using installed Microsoft Edge; stop any manual demo first.
+Run `npm run demo:browser`, open `.local/open-sender.html`, and follow its private sender link. Use the sample PDF and keep the sender tab open. **Trusted local machine/account only:** the secret-bearing launcher's Windows ACL is not hardened/verified. See [local browser testing](docs/local-browser-testing.md) for the complete workflow and limitations. `npm run test:browser` exercises an isolated temporary file-launcher click and encrypted workflow using installed Microsoft Edge. It uses an ephemeral listener and never touches the live demo launcher. `npm run test:ux` verifies polling/retry and clipboard behavior.
 
 Supports local PDF review, typed approval receipts, encrypted returns, and any-order/sequential/grouped recipients. Supports one fixed-size positioned typed-signature field per recipient on supported unrotated/uncropped pages; no verified identities or trusted PDF certificates. See [field limitations](docs/positioned-signature-fields.md).
 

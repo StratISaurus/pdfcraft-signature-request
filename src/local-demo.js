@@ -8,7 +8,7 @@ export async function startDemo({port=8788,writeLaunch=true}={}) {
     '/vendor/pdf-lib.js':'node_modules/pdf-lib/dist/pdf-lib.esm.js',
     '/vendor/pdf.mjs':'node_modules/pdfjs-dist/build/pdf.mjs',
     '/vendor/pdf.worker.mjs':'node_modules/pdfjs-dist/build/pdf.worker.mjs'};
-  for(const f of ['client-crypto','workflow','approval-pdf','approval-client']) files[`/src/${f}.js`]=`src/${f}.js`;
+  for(const f of ['client-crypto','workflow','approval-pdf','approval-client','response-checker']) files[`/src/${f}.js`]=`src/${f}.js`;
   for(const [url,path] of Object.entries(files)) {
     let bytes=await readFile(new URL(path,root));
     if(path==='src/approval-pdf.js') bytes=Buffer.from(bytes.toString().replace("from 'pdf-lib'", "from '/vendor/pdf-lib.js'"));
