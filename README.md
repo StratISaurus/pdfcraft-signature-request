@@ -4,7 +4,7 @@ Local browser electronic-approval prototype plus the original transport experime
 
 ## Browser prototype
 
-Run `npm run demo:browser`, open `.local/open-sender.html`, and follow its private sender link. Use the sample PDF and keep the sender tab open. **Trusted local machine/account only:** the secret-bearing launcher's Windows ACL is not hardened/verified. See [local browser testing](docs/local-browser-testing.md) for the complete workflow and limitations. `npm run test:browser` exercises an isolated temporary file-launcher click and encrypted workflow using installed Microsoft Edge. It uses an ephemeral listener and never touches the live demo launcher. `npm run test:ux` verifies polling/retry and clipboard behavior.
+Run `npm run demo:browser`, open `.local/open-sender.html`, and follow its private sender link. Use the sample PDF. First request setup generates a 24-word recovery phrase; record it separately and export the encrypted backup. Reload locks the sender until you enter that phrase. **Trusted local machine/account only:** the secret-bearing launcher's Windows ACL is not hardened/verified. See [local browser testing](docs/local-browser-testing.md) for the complete workflow and limitations. `npm run test:browser` exercises an isolated temporary file-launcher click and encrypted workflow using installed Microsoft Edge. It uses an ephemeral listener and never touches the live demo launcher. `npm run test:ux` verifies polling/retry and clipboard behavior. `npm run test:vault` exercises real Edge encrypted persistence, reload, empty-profile backup restoration, continuation, unavailable-request refusal and storage-failure cleanup.
 
 Supports local PDF review, typed approval receipts, encrypted returns, and any-order/sequential/grouped recipients. Supports one fixed-size positioned typed-signature field per recipient on supported unrotated/uncropped pages; no verified identities or trusted PDF certificates. See [field limitations](docs/positioned-signature-fields.md).
 
@@ -62,11 +62,15 @@ Errors include 400 invalid body/query, 401 invalid/missing capability on an exis
 
 ## Security and completion boundaries
 
-Experimental local development only. Do not expose through a reverse proxy, bind publicly, or use real client documents. No TLS, durable storage, recipient verification, abuse controls suitable for public service, recovery phrase, encrypted backup or desktop integration is implemented. The browser prototype adds PDF viewing, typed-approval artifact validation and stage routing, not certificate-based signatures. Bounded per-request/storage limits are not a complete concurrent connection or denial-of-service defence.
+Experimental local development only. Do not expose through a reverse proxy, bind publicly, or use real client documents. No TLS, recipient verification, abuse controls suitable for public service or desktop integration is implemented. The browser demo has [opt-in durable local ciphertext storage](docs/durable-local-relay.md); default mode and the original transport service remain ephemeral. The browser now has bounded encrypted sender persistence and phrase-plus-backup recovery (one immutable request per backup, up to 20 local entries); see [format and threat boundaries](docs/sender-vault-format.md). When browser storage is unavailable, imported backup plus phrase can explicitly resume session-only; reload loses unlocked access. New requests still require persistent encrypted storage. Recovery requires the original relay origin and an unexpired live request; it cannot restore lost relay data. Restart recovery requires durable mode configured beforehand, the same directory/origin, and an intact unexpired record. The browser prototype adds PDF viewing, typed-approval artifact validation and stage routing, not certificate-based signatures. Bounded per-request/storage limits are not a complete concurrent connection or denial-of-service defence.
 
 A correctly implemented relay need not see plaintext, but the hosted signer code is trusted: a malicious host/deployment could capture document keys in the browser. Separate origins and reviewed/reproducible builds reduce but do not eliminate that trust. Full secret-bearing invitation URLs cannot pass through the backend/email provider while claiming those parties never receive decryption secrets. Production key delivery remains a design gate.
 
 See [architecture](docs/architecture.md) for the agreed recovery, stages, protocol-versioning and deployment requirements. This project has not received a security audit and makes no legal-signature or production-security claim.
+
+## Optional durable browser relay
+
+See [configuration, trusted-account boundary, transaction guarantees and remaining creation-ACK gaps](docs/durable-local-relay.md). `npm run test:restart` verifies isolated process restart and browser recovery/signing/download. No live demo is reconfigured by the tests.
 
 ## Verification
 

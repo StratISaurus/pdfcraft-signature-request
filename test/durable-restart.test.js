@@ -1,0 +1,51 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
+import { openDurableStore } from '../src/durable-store.js';
+import { startLocalApp } from '../src/local-app.js';
+import { encryptBytes } from '../src/client-crypto.js';
+const token=()=>randomBytes(32).toString('base64url');
+const manifestHash='a'.repeat(64);
+async function fixture(t, options={}) {
+  const storageDir=await mkdtemp(join(tmpdir(),'pdfcraft-durable-'));
+  let app=await startLocalApp({storageDir,trustedLocalAccount:true,...options});
+  t.after(async()=>{if(app)await app.close();await rm(storageDir,{recursive:true,force:true});});
+  const call=(path,cap,method='GET',body)=>fetch(app.url+path,{method,headers:{Connection:'close',Authorization:`Bearer ${cap}`,...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});
+  const {payload}=await encryptBytes(new TextEncoder().encode('synthetic PRIVATE document'));
+  const recipients=[0,0,1].map((stage,i)=>({id:`r${i+1}`,stage,readToken:token(),responseToken:token(),payload}));
+  const create=()=>call('/api/requests',app.launchToken,'POST',{version:'pdfcraft-approval-v1',manifestHash,recipients});
+  return {storageDir,call,create,recipients,payload,restart:async()=>{const port=Number(new URL(app.url).port);await app.close();app=await startLocalApp({port,storageDir,trustedLocalAccount:true,...options});},stop:async()=>{await app.close();app=null;}};
+}
+test('durable restart preserves staged responses, acceptances and hashed role authentication',async t=>{
+  const f=await fixture(t);const res=await f.create();assert.equal(res.status,201);const {id,adminToken}=await res.json();const base=`/api/requests/${id}`;
+  const submit=i=>f.call(base+`/recipients/r${i+1}/response`,f.recipients[i].responseToken,'POST',{manifestHash,payload:f.payload});
+  assert.equal((await submit(0)).status,201);
+  assert.equal((await f.call(base+'/accept/r1',adminToken,'POST',{manifestHash})).status,200);
+  assert.equal((await submit(1)).status,201);
+  await f.restart();
+  const state=await f.call(base,adminToken);assert.equal(state.status,200);
+  assert.deepEqual((await state.json()).recipients.map(r=>r.state),['accepted','submitted','waiting']);
+  assert.equal((await f.call(base,f.recipients[0].readToken)).status,401);
+  assert.equal((await f.call(base+'/recipients/r1',f.recipients[0].responseToken)).status,401);
+  assert.equal((await f.call(base+'/recipients/r3',f.recipients[2].readToken)).status,423);
+  assert.equal((await submit(1)).status,409);
+  assert.equal((await f.call(base+'/accept/r2',adminToken,'POST',{manifestHash})).status,200);
+  await f.restart();assert.equal((await f.call(base+'/recipients/r3',f.recipients[2].readToken)).status,200);
+  const disk=await readFile(join(f.storageDir,'relay.sqlite'));
+  for(const secret of [adminToken,...f.recipients.flatMap(r=>[r.readToken,r.responseToken]),'synthetic PRIVATE document'])assert(!disk.includes(Buffer.from(secret)),'Plaintext/capability leaked');
+});
+test('durable store rejects unsupported schema and unexpected plaintext metadata',async t=>{
+  const f=await fixture(t);await f.create();await f.stop();
+  const db=new DatabaseSync(join(f.storageDir,'relay.sqlite'));
+  db.exec('PRAGMA user_version=999');db.close();
+  await assert.rejects(startLocalApp({storageDir:f.storageDir,trustedLocalAccount:true}),/version/);
+  const edit=new DatabaseSync(join(f.storageDir,'relay.sqlite'));
+  edit.exec('PRAGMA user_version=1');
+  const row=edit.prepare('SELECT id,value FROM records').get();const v=JSON.parse(row.value);v.name='forbidden plaintext';
+  edit.prepare('UPDATE records SET value=? WHERE id=?').run(JSON.stringify(v),row.id);edit.close();
+  await assert.rejects(startLocalApp({storageDir:f.storageDir,trustedLocalAccount:true}),/record/);
+});

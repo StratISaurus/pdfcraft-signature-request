@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { openDurableStore } from './durable-store.js';
 import { listenLoopback } from './listen-loopback.js';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 const token = () => randomBytes(32).toString('base64url');
@@ -9,9 +10,9 @@ function validPayload(p) {
   const b64 = s => typeof s === 'string' && Buffer.from(s,'base64').toString('base64') === s;
   return exact(p,'ciphertext,nonce,protocol') && p.protocol === 'pdfcraft-relay-experimental-v1' && b64(p.nonce) && Buffer.from(p.nonce,'base64').length === 12 && b64(p.ciphertext) && Buffer.from(p.ciphertext,'base64').length >= 16;
 }
-export async function startLocalApp({port=0, assets = new Map(), ttlMs=3600000}={}) {
+export async function startLocalApp({port=0, assets = new Map(), ttlMs=3600000, storageDir, trustedLocalAccount=false, maxStorageBytes=32*1024*1024}={}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535 || !Number.isInteger(ttlMs) || ttlMs < 1 || ttlMs > 86400000) throw Error('Invalid local app configuration');
-  const launchToken = token(), launchHash = hash(launchToken), records = new Map();
+  const launchToken = token(), launchHash = hash(launchToken), records = storageDir !== undefined ? await openDurableStore(storageDir,trustedLocalAccount,maxStorageBytes) : new Map();
   const server = http.createServer(async (req,res) => {
     const send = (status, body) => { res.writeHead(status, {'Content-Type':'application/json','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}); res.end(body === undefined ? undefined : JSON.stringify(body)); };
     const origin = `http://127.0.0.1:${server.address().port}`;
@@ -24,7 +25,8 @@ export async function startLocalApp({port=0, assets = new Map(), ttlMs=3600000}=
     if (req.headers.host !== `127.0.0.1:${server.address().port}` || (req.headers.origin && req.headers.origin !== origin) || (req.headers['sec-fetch-site'] === 'cross-site' && !rootNavigation)) return send(403,{error:'origin_or_host_forbidden'});
     if (req.url.includes('?')) return send(400,{error:'query_not_allowed'});
     if (req.method !== 'POST' && (req.headers['transfer-encoding'] || Number(req.headers['content-length']) > 0)) return send(400,{error:'unexpected_body'});
-    for (const [id,r] of records) if (r.expiresAt <= Date.now()) records.delete(id);
+    try {for (const [id,r] of records) if (r.expiresAt <= Date.now()) records.delete(id);}
+    catch {return send(503,{error:'storage_unavailable'});}
     if (req.method === 'GET' && req.url === '/health') return send(200,{status:'ok',app:'local-approval-demo',version:'pdfcraft-approval-v1'});
     if (req.method === 'GET' && assets.has(req.url)) {
       const a = assets.get(req.url);
@@ -70,7 +72,8 @@ export async function startLocalApp({port=0, assets = new Map(), ttlMs=3600000}=
         if (records.get(m[1])!==record || record.expiresAt<=Date.now()) return send(404,{error:'not_found'});
         if (!exact(body,'manifestHash') || body.manifestHash!==record.manifestHash) return send(400,{error:'binding_mismatch'});
         if(r.state!=='submitted') return send(409,{error:'not_pending'});
-        r.state='accepted';return send(200,{state:r.state});
+        const next={...record,recipients:record.recipients.map(x=>x===r?{...x,state:'accepted'}:x)};
+        records.set(m[1],next);r.state='accepted';Map.prototype.set.call(records,m[1],record);return send(200,{state:'accepted'});
       }
       if (m[2] === 'recipients') {
         if (!auth(m[4] ? r.responseHash : r.readHash)) return send(401,{error:'unauthorized'});
@@ -84,13 +87,14 @@ export async function startLocalApp({port=0, assets = new Map(), ttlMs=3600000}=
           // Recheck after the await: simultaneous submissions cannot replace evidence.
           if (!eligible() || r.state!=='waiting') return send(409,{error:'already_submitted'});
           if (used()+Buffer.byteLength(JSON.stringify(body))>32*1024*1024) return send(507,{error:'capacity_exceeded'});
-          r.response=body.payload;r.state='submitted';return send(201,{state:r.state});
+          const next={...record,recipients:record.recipients.map(x=>x===r?{...x,response:body.payload,state:'submitted'}:x)};
+          records.set(m[1],next);r.response=body.payload;r.state='submitted';Map.prototype.set.call(records,m[1],record);return send(201,{state:'submitted'});
         }
       }
       return send(405,{error:'method_not_allowed'});
-    } catch(e) { return send(e.status || 400,{error:'invalid_body'}); }
+    } catch(e) { return send(e.status || 400,{error:e.status===503?'storage_unavailable':e.status===507?'capacity_exceeded':'invalid_body'}); }
   });
   server.requestTimeout=15000;server.headersTimeout=10000;server.maxConnections=30;
-  await listenLoopback(server,port);
-  return {url:`http://127.0.0.1:${server.address().port}`,launchToken,close:()=>new Promise(resolve=>server.close(resolve))};
+  try {await listenLoopback(server,port);} catch(e) {records.close?.();throw e;}
+  return {url:`http://127.0.0.1:${server.address().port}`,launchToken,close:()=>new Promise(resolve=>server.close(()=>{records.close?.();resolve();}))};
 }

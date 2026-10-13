@@ -37,6 +37,8 @@ Sequential PDF signatures can append revisions, with each recipient verifying an
 
 ## Recovery
 
+Current bounded browser slice: [sender vault format](sender-vault-format.md). One immutable request per encrypted backup with explicit phrase unlock, not the planned aggregate rotating vault/print kit below. The browser relay is ephemeral by default, with [optional durable local ciphertext storage](durable-local-relay.md) for same-origin restart recovery. Creation-ACK/idempotency gaps remain explicit.
+
 Prompt on first signing request, not first ordinary PDF. Client generates standard-format mnemonic using maintained library and CSPRNG. Phrase protects a recovery wrapper around vault key material. Vault protects per-document keys. Printable recovery kit includes phrase, QR equivalent, non-secret vault locator, format version and offline instructions; secret never enters logs/chat/source control. Offer encrypted local export and optional remote ciphertext backup.
 
 Restoration needs both phrase and encrypted backup containing request index and wrapped keys. A phrase cannot reconstruct expired/deleted documents. Confirm backup restoration in tests before labelling recovery ready. Anyone with phrase plus backup can recover access. Rotation cannot revoke old downloaded backups. Do not call offline recovery secrets one-use codes.

@@ -13,9 +13,13 @@
     "demo:browser": "node src/local-demo.js",
     "test:browser": "node scripts/browser-test.js",
     "test:ux": "node scripts/ux-lifecycle-test.js",
-    "test:routing": "node scripts/routing-intent-test.js"
+    "test:routing": "node scripts/routing-intent-test.js",
+    "test:vault": "node scripts/vault-recovery-test.js",
+    "test:restart": "node --test test/durable*.test.js && node scripts/restart-test.js"
   },
   "dependencies": {
+    "@scure/bip39": "2.4.0",
+    "esbuild": "0.28.2",
     "pdf-lib": "1.17.1",
     "pdfjs-dist": "5.4.624"
   },

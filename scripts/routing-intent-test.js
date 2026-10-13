@@ -15,6 +15,7 @@ try {
     await page.locator('#sample').click();await page.locator('#preview-fields').click();
     await page.getByText('Select a recipient and click a page to place their field.').waitFor();
     for(const id of ['r1','r2']){await page.locator('#field-recipient').selectOption(id);await page.locator('#placement-pages canvas').first().press('Enter');}
+    await page.locator('#create').click();await page.locator('#vault-confirm').check();
     let release,entered;const gate=new Promise(r=>release=r),started=new Promise(r=>entered=r);let posts=0,stale;
     await page.route('**/api/requests',async route=>{
       posts++;const response=await route.fetch();assert.equal(response.status(),201);

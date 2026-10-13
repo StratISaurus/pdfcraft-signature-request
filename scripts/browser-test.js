@@ -96,6 +96,8 @@ try {
   await sender.screenshot({path:new URL('sender-mobile.png',dir).pathname.replace(/^\/C:/,'C:'),fullPage:true});
   await sender.setViewportSize({width:1280,height:720});
   await sender.getByRole('button',{name:'Create encrypted request'}).click();
+  await sender.locator('#vault-confirm').check();
+  await sender.getByRole('button',{name:'Create encrypted request'}).click();
   await sender.getByRole('heading',{name:'Request ready'}).waitFor();
   const links=await sender.locator('[data-invitation]').evaluateAll(nodes=>nodes.map(n=>n.href));
   assert.equal(links.length,2);

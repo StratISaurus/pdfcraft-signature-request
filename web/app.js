@@ -2,6 +2,8 @@ import { prepareRequest, invitationFragment, openInvitation, submitApproval, col
 import { syntheticPdf, inspectPdf } from '/src/approval-pdf.js';
 import { getDocument, GlobalWorkerOptions } from '/vendor/pdf.mjs';
 import { createResponseChecker } from '/src/response-checker.js';
+import { generatePhrase, sealSender, openSender, saveBackup, STORAGE_PREFIX, MAX_BACKUP_BYTES } from '/src/sender-vault.js';
+let recoveryPhrase, encryptedBackup, pendingRestore, sessionOnly=false, vaultBusy=false;
 GlobalWorkerOptions.workerSrc='/vendor/pdf.worker.mjs';
 let responseChecker;
 const $=id=>document.getElementById(id);
@@ -157,6 +159,67 @@ async function selectDocument(load,filename,readyMessage) {
     message(e.message,true);
   }
 }
+function listLocalBackups(){
+  const options=[];
+  for(let i=0;i<localStorage.length;i++){
+    const key=localStorage.key(i);
+    if(key?.startsWith(STORAGE_PREFIX)){
+      const option=document.createElement('option');option.value=key;option.textContent=key.slice(STORAGE_PREFIX.length);options.push(option);
+    }
+  }
+  $('vault-local').replaceChildren(...options);
+}
+async function persistBackup(backup,isCurrent=()=>true){
+  if(!navigator.locks)throw Error('This browser cannot safely persist sender requests; Web Locks required.');
+  return navigator.locks.request('pdfcraft.sender-vault.v1',()=>{
+    if(!isCurrent())throw Error('Request details changed during creation. Review them and create again.');
+    return saveBackup(localStorage,backup);
+  });
+}
+action('vault-export',async()=>{
+  if(!encryptedBackup)throw Error('No unlocked backup to export.');
+  download(encryptedBackup,`sender-backup-${JSON.parse(encryptedBackup).id}.json`,'application/json');
+  $('vault-status').textContent=(sessionOnly?'Session-only recovery; not saved in this browser. ':'')+'Encrypted backup downloaded. Keep its recovery phrase separately offline.';
+});
+action('vault-unlock',async()=>{
+  if(pendingRestore || sender || creationPending || vaultBusy){
+    $('vault-unlock-phrase').value='';
+    throw Error(pendingRestore?'Choose session-only recovery or reload to discard the unlocked backup.':'Reload to switch sender requests.');
+  }
+  vaultBusy=true;
+  try{
+    const file=$('vault-import').files[0];
+    if(file?.size>MAX_BACKUP_BYTES)throw Error('Backup exceeds size limit');
+    const backup=file?await file.text():localStorage.getItem($('vault-local').value);
+    let restored;
+    try{restored=await openSender(backup,$('vault-unlock-phrase').value,origin);}
+    catch{throw Error('Unable to unlock backup. Check the phrase, backup format and relay origin.');}
+    // Check existence/binding first. Never display recovered invitations as a live request without it.
+    let state;
+    try{state=await collectApprovals(origin,restored.sender);}
+    catch(e){if(e.message==='not_found')throw Error('Request unavailable: expired, revoked, or relay restarted. Backup cannot recreate relay responses.');throw e;}
+    try{await persistBackup(backup);}
+    catch{
+      pendingRestore={backup,sender:restored.sender};
+      show('vault-session');
+      $('vault-status').textContent='Cannot save encrypted backup. Enable browser storage or free space after exporting existing backups. Alternatively, explicitly resume this request session-only below.';
+      return;
+    }
+    encryptedBackup=backup;recoveryPhrase=undefined;$('vault-phrase').value='';hide('vault-setup');
+    publishSender(restored.sender);displayCollected(state);
+  }finally{$('vault-unlock-phrase').value='';vaultBusy=false;}
+});
+action('vault-resume-session',async()=>{
+  if(!pendingRestore || vaultBusy || sender || creationPending)throw Error('No pending recovery.');
+  vaultBusy=true;
+  try{
+    const state=await collectApprovals(origin,pendingRestore.sender);
+    encryptedBackup=pendingRestore.backup;sessionOnly=true;
+    recoveryPhrase=undefined;$('vault-phrase').value='';$('vault-unlock-phrase').value='';hide('vault-setup');
+    publishSender(pendingRestore.sender);displayCollected(state);
+    pendingRestore=undefined;hide('vault-session');
+  }finally{vaultBusy=false;}
+});
 action('sample',()=>selectDocument(syntheticPdf,'synthetic-agreement.pdf · 2 pages','Sample PDF ready. No real personal data.'));
 $('file').addEventListener('change',()=>{
   const f=$('file').files[0];
@@ -168,7 +231,10 @@ $('file').addEventListener('change',()=>{
 });
 $('mode').addEventListener('change',()=>{$('stage-wrap').hidden=$('mode').value!=='grouped';$('stage-wrap').open=$('mode').value==='grouped';});
 action('create',async()=>{
+  if(sender || pendingRestore || vaultBusy)throw Error('Reload to switch sender requests.');
   if(!canCreate())throw Error('Preview and place one field per recipient first.');
+  if(!recoveryPhrase){recoveryPhrase=generatePhrase();$('vault-phrase').value=recoveryPhrase;show('vault-setup');$('vault-setup').scrollIntoView({block:'center'});message('Record the recovery phrase, confirm it, then create again.');return;}
+  if(!$('vault-confirm').checked)throw Error('Record and confirm your recovery phrase first.');
   creationPending=true;freezeRouting(true);
   try {
   await discardPreparedRequest();
@@ -180,7 +246,20 @@ action('create',async()=>{
     message('Request details changed during creation. Review them and create again.',true);
     return;
   }
-  sender=prepared;
+  try {
+    const backup=await sealSender(origin,prepared,recoveryPhrase);
+    await persistBackup(backup,()=>revision===documentGeneration && generation===previewGeneration && intent===routingIntent());
+    encryptedBackup=backup;
+  } catch(e){discardedRequest=prepared;await discardPreparedRequest();throw e;}
+  recoveryPhrase=undefined;$('vault-phrase').value='';$('vault-confirm').checked=false;hide('vault-setup');
+  publishSender(prepared);
+  } finally {creationPending=false;freezeRouting(false);updateCreate();}
+});
+function publishSender(prepared) {
+  sender=prepared;responseChecker?.stop();collected=undefined;
+  hide('vault-restore');show('vault-export');hide('no-access');
+  $('vault-status').textContent=sessionOnly?'Session-only recovery; not saved in this browser. Reload or close loses unlocked access. Keep your encrypted backup and phrase separately to restore again.':'Encrypted request saved locally. Export a backup now. Reload to lock or switch requests.';
+  $('download-final').disabled=true;$('evidence').disabled=true;$('returned').replaceChildren();
   $('invitations').replaceChildren();
   sender.invitations.forEach((inv,i)=>{
     const row=document.createElement('div');row.className='invitation';row.dataset.recipient=inv.recipientId;row.style.setProperty('--signer',colours[i]);
@@ -191,7 +270,7 @@ action('create',async()=>{
     const status=document.createElement('span');status.className='status';
     const controls=document.createElement('div');controls.append(a,copy);row.append(name,status,controls);$('invitations').append(row);
   });
-  hide('prepare');show('manage');$('progress').textContent=`0 of ${labels.length} accepted`;message('Request ready. Invitations stay in this tab.');
+  hide('prepare');show('manage');$('progress').textContent=`0 of ${sender.manifest.recipients.length} accepted`;message('Request ready. Export your encrypted backup.');
   updateStatuses(sender.manifest.recipients.map(r=>({...r,state:'waiting'})));
   responseChecker=createResponseChecker({collect:()=>collectApprovals(origin,sender),visible:()=>!document.hidden,isTerminal:value=>value.approvals.length===sender.manifest.recipients.length,onResult:displayCollected,onError:error=>{
     $('auto-status').textContent=error.message==='not_found'?'Request expired or revoked. Automatic checking stopped.':'Automatic checking paused after an error. Choose Check responses to retry.';
@@ -199,8 +278,7 @@ action('create',async()=>{
     message(error.message==='not_found'?'This request is no longer available. Previously downloaded copies cannot be recalled.':error.message,true);
   }});
   responseChecker.start();
-  } finally {creationPending=false;freezeRouting(false);updateCreate();}
-});
+}
 function updateStatuses(recipients){
   for(const r of recipients){
     const locked=recipients.some(other=>other.stage<r.stage && other.state!=='accepted');
@@ -239,8 +317,13 @@ try {
   const fragment=new URLSearchParams(location.hash.slice(1));
   history.replaceState(null,'',location.pathname);
   if(fragment.has('invite')){invitation=JSON.parse(fragment.get('invite'));await open();}
-  else if(fragment.has('setup')){bootstrap=fragment.get('setup');show('prepare');}
-  else show('no-access');
+  else {
+    show('vault');
+    if(fragment.has('setup')){bootstrap=fragment.get('setup');show('prepare');}
+    else show('no-access');
+    try{listLocalBackups();}
+    catch{$('vault-status').textContent='Local storage unavailable. Enable browser storage or import an encrypted backup and choose session-only recovery. New requests still require persistent storage.';}
+  }
 }catch(e){message(e.message,true);}
 window.addEventListener('hashchange',()=>{if(location.hash)location.reload();});
-window.addEventListener('beforeunload',e=>{if(sender){e.preventDefault();e.returnValue='';}});
+window.addEventListener('beforeunload',e=>{if(pendingRestore || (sender && (sessionOnly || !encryptedBackup))){e.preventDefault();e.returnValue='';}});

@@ -15,6 +15,7 @@ try {
   await page.getByRole('button',{name:'Preview and place fields'}).click();
   await page.getByText('Select a recipient and click a page to place their field.').waitFor();
   await page.locator('#placement-pages canvas').first().press('Enter');
+  await page.locator('#create').click();await page.locator('#vault-confirm').check();
   await page.locator('#create').click();await page.locator('#manage').waitFor();
   const link=await page.locator('[data-invitation]').getAttribute('href');
   const invitation=JSON.parse(new URLSearchParams(new URL(link).hash.slice(1)).get('invite'));

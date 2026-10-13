@@ -41,6 +41,8 @@ export async function documentSelectionRaces(context,app,secrets=[]) {
   }
   async function createdPages(page) {
     await page.locator('#create').click();await settle(page);
+    await page.locator('#vault-confirm').check();
+    await page.locator('#create').click();await settle(page);
     const link=await page.locator('[data-invitation]').first().getAttribute('href');
     const inv=JSON.parse(new URLSearchParams(new URL(link).hash.slice(1)).get('invite'));
     const opened=await openInvitation(app.url,inv);secrets.push(inv.key,opened.responseKey);
